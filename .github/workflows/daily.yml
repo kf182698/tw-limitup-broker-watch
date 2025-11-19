@@ -39,6 +39,7 @@ jobs:
           export TZ='Asia/Taipei'
           
           # 步驟 2: 獲取今天的日期 (YYYY-MM-DD) 作為程式執行的參數
+          # 這裡會使用當前 Runner 時區下的日期 (CST 18:00)
           TODAY_DATE=$(date +%Y-%m-%d)
           echo "台灣時間 $TODAY_DATE 18:00 開始執行"
           
@@ -46,9 +47,11 @@ jobs:
           python -m src.app.main run --date $TODAY_DATE
           
       - name: 將生成的資料結果提交回儲存庫 (Commit Data)
-        # 此步驟會將 data_raw/ 和 data_clean/ 中新生成的檔案提交回 GitHub
+        # 此步驟修復了之前因為沒有檔案而失敗的問題
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          # 只提交數據資料夾內的檔案變動，避免提交其他無關檔案
+          # 新增 commit_options: '--allow-empty' 確保在沒有檔案變動時也能成功
+          commit_options: '--allow-empty' 
+          # 只提交數據資料夾內的檔案變動
           file_pattern: 'data_raw/* data_clean/*'
           commit_message: "🤖 數據自動提交：更新每日監控結果"
