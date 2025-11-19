@@ -4,8 +4,8 @@ from typing import Optional, Any
 import pandas as pd
 from io import StringIO
 from datetime import date
-# from ..app.utils_http import get_session # <-- 移除有問題的相對導入
-import requests # <-- 確保 requests 模組可用 (原程式碼有用到 requests.exceptions)
+# from ..app.utils_http import get_session # 保持註解，因為我們直接使用 requests
+import requests # 確保 requests 模組可用
 
 
 class LimitUpListError(Exception):
@@ -16,15 +16,18 @@ class LimitUpListError(Exception):
 def fetch_limitup_html(url: str) -> str:
     """Fetch the HTML from the given limit-up list URL.
 
-    **已修正：直接使用 requests.get 替換 get_session()，以避免 NameError。**
+    **已修正：加入 User-Agent 標頭來解決 403 Forbidden 錯誤。**
     Handles response encoding. Raises LimitUpListError on network failure.
     """
+    
+    # 🎯 修正 403 錯誤：定義 User-Agent 標頭，模擬瀏覽器行為
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36"
+    }
+
     try:
-        # sess = get_session() # <-- 移除原始程式碼
-        # resp = sess.get(url, timeout=20) # <-- 移除原始程式碼
-        
-        # 修正：直接使用 requests.get 
-        resp = requests.get(url, timeout=20)
+        # 傳遞 headers 參數給 requests.get()
+        resp = requests.get(url, headers=HEADERS, timeout=20)
         resp.raise_for_status()  # 檢查 HTTP 錯誤
         
         # 設置編碼：使用伺服器/Apparent，最終回退到 UTF-8
@@ -39,16 +42,12 @@ def parse_limitup_table(html: str, trade_date: str) -> pd.DataFrame:
     """Parse the first table in the HTML as a limit-up list.
 
     **已修正：解決 Pandas FutureWarning 和 AttributeError。**
-    The resulting DataFrame will always contain these columns: trade_date, 
-    code, stock_name, market, close, volume, pct_change.
-    Raises LimitUpListError if no tables can be parsed.
     """
-    # -------------------------------------------------------------
-    # 🎯 修復 Pandas FutureWarning：使用 StringIO
-    # -------------------------------------------------------------
     try:
+        # 🎯 修正 Pandas FutureWarning：使用 StringIO
         tables = pd.read_html(StringIO(html)) 
     except Exception as e:
+        # 如果 lxml 仍然缺失 (雖然您已修正 requirements.txt)，這裡會捕捉到
         raise LimitUpListError(f"Failed to parse HTML tables: {e}")
         
     if not tables:
@@ -86,8 +85,8 @@ def parse_limitup_table(html: str, trade_date: str) -> pd.DataFrame:
     # 確保最終 DataFrame 結構完整
     result = pd.DataFrame()
     
-    # 🎯 修正：AttributeError: 'str' object has no attribute 'strftime'
-    result["trade_date"] = trade_date # 直接使用傳入的字串日期
+    # 🎯 修正 AttributeError：直接使用傳入的字串日期
+    result["trade_date"] = trade_date 
     
     result["code"] = df.get("code", pd.Series(dtype=str)).astype(str).str.strip()
     result["stock_name"] = df.get("stock_name", pd.Series(dtype=str)).astype(str).str.strip()
@@ -106,10 +105,10 @@ def build_limitup_list(trade_date: date, limitup_url: str, min_pct: float) -> Op
     """
     Main function to execute the fetching, parsing, and filtering pipeline.
     
-    **注意：這裡假設 trade_date 是一個 datetime.date 物件，用於格式化。**
+    注意：這裡將 datetime.date 物件格式化為字串，傳遞給 parse_limitup_table。
     """
     try:
-        # 將 date 物件格式化為字串，傳遞給 parse_limitup_table
+        # 將 date 物件格式化為字串
         trade_date_str = trade_date.strftime("%Y-%m-%d")
         
         html = fetch_limitup_html(limitup_url)
