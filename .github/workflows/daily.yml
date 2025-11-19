@@ -32,8 +32,8 @@ jobs:
         # 將 Email 所需的密鑰配置為環境變數，從 GitHub Secrets 取得
         env:
           # 請根據您實際使用的 Email 服務 (例如 Gmail 或 SendGrid) 填寫對應的密鑰
-          GMAIL_USER: ${{ secrets.GMAIL_USER }}
-          GMAIL_PASS: ${{ secrets.GMAIL_PASS }}
+          EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
           # 如果您的 config/settings.yaml 需要其他環境變數，也在此處新增
           
