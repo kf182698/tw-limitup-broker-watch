@@ -4,8 +4,8 @@ from typing import Optional, Any
 import pandas as pd
 from io import StringIO
 from datetime import date
-# 假設您在 src/app/utils_http 中有 requests 相關的導入
-import requests 
+# from ..app.utils_http import get_session # <-- 移除有問題的相對導入
+import requests # <-- 確保 requests 模組可用 (原程式碼有用到 requests.exceptions)
 
 
 class LimitUpListError(Exception):
@@ -16,13 +16,15 @@ class LimitUpListError(Exception):
 def fetch_limitup_html(url: str) -> str:
     """Fetch the HTML from the given limit-up list URL.
 
-    The caller must provide a fully qualified URL. Handles response encoding.
-    Raises LimitUpListError on network failure.
+    **已修正：直接使用 requests.get 替換 get_session()，以避免 NameError。**
+    Handles response encoding. Raises LimitUpListError on network failure.
     """
     try:
-        # 假設 get_session 提供了正確的 Session 物件
-        sess = get_session() 
-        resp = sess.get(url, timeout=20)
+        # sess = get_session() # <-- 移除原始程式碼
+        # resp = sess.get(url, timeout=20) # <-- 移除原始程式碼
+        
+        # 修正：直接使用 requests.get 
+        resp = requests.get(url, timeout=20)
         resp.raise_for_status()  # 檢查 HTTP 錯誤
         
         # 設置編碼：使用伺服器/Apparent，最終回退到 UTF-8
@@ -36,6 +38,7 @@ def fetch_limitup_html(url: str) -> str:
 def parse_limitup_table(html: str, trade_date: str) -> pd.DataFrame:
     """Parse the first table in the HTML as a limit-up list.
 
+    **已修正：解決 Pandas FutureWarning 和 AttributeError。**
     The resulting DataFrame will always contain these columns: trade_date, 
     code, stock_name, market, close, volume, pct_change.
     Raises LimitUpListError if no tables can be parsed.
@@ -46,7 +49,6 @@ def parse_limitup_table(html: str, trade_date: str) -> pd.DataFrame:
     try:
         tables = pd.read_html(StringIO(html)) 
     except Exception as e:
-        # 這裡會捕捉到我們上次看到的 lxml 錯誤，並拋出清晰的錯誤訊息
         raise LimitUpListError(f"Failed to parse HTML tables: {e}")
         
     if not tables:
@@ -84,10 +86,8 @@ def parse_limitup_table(html: str, trade_date: str) -> pd.DataFrame:
     # 確保最終 DataFrame 結構完整
     result = pd.DataFrame()
     
-    # -------------------------------------------------------------
-    # 🎯 錯誤修正：移除 .strftime()，直接使用 trade_date (它已經是字串)
-    # -------------------------------------------------------------
-    result["trade_date"] = trade_date # <-- 修正後的程式碼 (取代第 83 行)
+    # 🎯 修正：AttributeError: 'str' object has no attribute 'strftime'
+    result["trade_date"] = trade_date # 直接使用傳入的字串日期
     
     result["code"] = df.get("code", pd.Series(dtype=str)).astype(str).str.strip()
     result["stock_name"] = df.get("stock_name", pd.Series(dtype=str)).astype(str).str.strip()
@@ -106,17 +106,10 @@ def build_limitup_list(trade_date: date, limitup_url: str, min_pct: float) -> Op
     """
     Main function to execute the fetching, parsing, and filtering pipeline.
     
-    Args:
-        trade_date: The trading date (should be a datetime.date object for consistency).
-        limitup_url: The URL to fetch the data from.
-        min_pct: The minimum percentage change to qualify as limit-up.
-        
-    Returns:
-        DataFrame of limit-up stocks, or None if the process fails.
+    **注意：這裡假設 trade_date 是一個 datetime.date 物件，用於格式化。**
     """
     try:
-        # 注意：雖然 parse_limitup_table 接收字串，但為了保持類型一致性，
-        # 我們在這裡將 trade_date 格式化為字串再傳遞。
+        # 將 date 物件格式化為字串，傳遞給 parse_limitup_table
         trade_date_str = trade_date.strftime("%Y-%m-%d")
         
         html = fetch_limitup_html(limitup_url)
