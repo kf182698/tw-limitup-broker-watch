@@ -1,0 +1,50 @@
+name: Daily Stock Watch (台灣時間 18:00 執行)
+
+# 設定排程
+on:
+  # cron 設定 '0 10 * * 1-5'
+  # UTC 10:00 對應台灣時間 (CST/GMT+8) 18:00。
+  # 執行時間為每週一到週五，以符合交易日需求。
+  schedule:
+    - cron: '0 10 * * 1-5'
+  
+  # 允許手動觸發 (方便測試)
+  workflow_dispatch:
+
+jobs:
+  run-daily-analysis:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 檢查程式碼
+        uses: actions/checkout@v4
+
+      - name: 設定 Python 環境
+        # 建議使用 3.10 或 3.11 等較新的版本
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安裝專案依賴套件
+        run: pip install -r requirements.txt
+
+      - name: 執行漲停券商監控與 Email 通知
+        # 將 Email 所需的密鑰配置為環境變數，從 GitHub Secrets 取得
+        env:
+          # 請根據您實際使用的 Email 服務 (例如 Gmail 或 SendGrid) 填寫對應的密鑰
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_PASS: ${{ secrets.GMAIL_PASS }}
+          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+          # 如果您的 config/settings.yaml 需要其他環境變數，也在此處新增
+          
+        run: |
+          # 步驟 1: 設定時區為 Asia/Taipei (台灣時間)
+          export TZ='Asia/Taipei'
+          
+          # 步驟 2: 獲取今天的日期 (YYYY-MM-DD) 作為程式執行的參數
+          TODAY_DATE=$(date +%Y-%m-%d)
+          echo "台灣時間 $TODAY_DATE 18:00 開始執行"
+          
+          # 步驟 3: 執行您的 Python 腳本
+          # 程式會自動查詢 $TODAY_DATE 的漲停個股與分點明細，並寄出 Email
+          python -m src.app.main run --date $TODAY_DATE
