@@ -1,10 +1,11 @@
 """Fetch and parse the limit-up (漲停) list from the configured source."""
 
-from typing import Optional
+from typing import Optional, Any
 import pandas as pd
 from io import StringIO
 from datetime import date
-from ..app.utils_http import get_session
+# 假設您在 src/app/utils_http 中有 requests 相關的導入
+import requests 
 
 
 class LimitUpListError(Exception):
@@ -19,7 +20,8 @@ def fetch_limitup_html(url: str) -> str:
     Raises LimitUpListError on network failure.
     """
     try:
-        sess = get_session()
+        # 假設 get_session 提供了正確的 Session 物件
+        sess = get_session() 
         resp = sess.get(url, timeout=20)
         resp.raise_for_status()  # 檢查 HTTP 錯誤
         
@@ -31,7 +33,7 @@ def fetch_limitup_html(url: str) -> str:
         raise LimitUpListError(f"Network error fetching limit-up list from {url}: {e}")
 
 
-def parse_limitup_table(html: str, trade_date: date) -> pd.DataFrame:
+def parse_limitup_table(html: str, trade_date: str) -> pd.DataFrame:
     """Parse the first table in the HTML as a limit-up list.
 
     The resulting DataFrame will always contain these columns: trade_date, 
@@ -44,6 +46,7 @@ def parse_limitup_table(html: str, trade_date: date) -> pd.DataFrame:
     try:
         tables = pd.read_html(StringIO(html)) 
     except Exception as e:
+        # 這裡會捕捉到我們上次看到的 lxml 錯誤，並拋出清晰的錯誤訊息
         raise LimitUpListError(f"Failed to parse HTML tables: {e}")
         
     if not tables:
@@ -80,7 +83,12 @@ def parse_limitup_table(html: str, trade_date: date) -> pd.DataFrame:
 
     # 確保最終 DataFrame 結構完整
     result = pd.DataFrame()
-    result["trade_date"] = trade_date.strftime("%Y-%m-%d") 
+    
+    # -------------------------------------------------------------
+    # 🎯 錯誤修正：移除 .strftime()，直接使用 trade_date (它已經是字串)
+    # -------------------------------------------------------------
+    result["trade_date"] = trade_date # <-- 修正後的程式碼 (取代第 83 行)
+    
     result["code"] = df.get("code", pd.Series(dtype=str)).astype(str).str.strip()
     result["stock_name"] = df.get("stock_name", pd.Series(dtype=str)).astype(str).str.strip()
     result["market"] = None # 保持為 None，等待後續判斷 (如 TPEX, TAI)
@@ -99,7 +107,7 @@ def build_limitup_list(trade_date: date, limitup_url: str, min_pct: float) -> Op
     Main function to execute the fetching, parsing, and filtering pipeline.
     
     Args:
-        trade_date: The trading date.
+        trade_date: The trading date (should be a datetime.date object for consistency).
         limitup_url: The URL to fetch the data from.
         min_pct: The minimum percentage change to qualify as limit-up.
         
@@ -107,8 +115,12 @@ def build_limitup_list(trade_date: date, limitup_url: str, min_pct: float) -> Op
         DataFrame of limit-up stocks, or None if the process fails.
     """
     try:
+        # 注意：雖然 parse_limitup_table 接收字串，但為了保持類型一致性，
+        # 我們在這裡將 trade_date 格式化為字串再傳遞。
+        trade_date_str = trade_date.strftime("%Y-%m-%d")
+        
         html = fetch_limitup_html(limitup_url)
-        df = parse_limitup_table(html, trade_date)
+        df = parse_limitup_table(html, trade_date_str)
         
         # 篩選出漲停股票 (確保 pct_change 存在且大於等於 min_pct)
         if df.empty or "pct_change" not in df.columns:
