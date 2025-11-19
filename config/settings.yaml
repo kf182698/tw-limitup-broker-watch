@@ -4,9 +4,9 @@ timezone: "Asia/Taipei"
 # 資料來源設定
 source:
   # 漲停清單頁面網址，例如 https://example.com/limitup
-  limitup_url: ""
+  limitup_url: "https://fubon-ebrokerdj.fbs.com.tw/z/zg/zg_AB_0_0.djhtm"
   # 券商分點明細網址模板，例如 https://example.com/broker/{code}
-  broker_detail_url_template: ""
+  broker_detail_url_template: "https://fubon-ebrokerdj.fbs.com.tw/z/zc/zco/zco_8422.djhtm"
 
 # 漲停篩選設定
 limitup:
@@ -17,7 +17,7 @@ limitup:
 email:
   # 收件人列表
   to:
-    - "youremail@example.com"
+    - "kf182698@gmail.com"
   # 通知標題前綴，會自動加上日期
   subject_prefix: "隔沖主力鎖漲停標的"
   # 寄信服務優先順序，可依需求調整
