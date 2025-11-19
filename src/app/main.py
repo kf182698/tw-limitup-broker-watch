@@ -4,6 +4,7 @@ import argparse
 import yaml
 import os # <-- 新增：引入 os 模組來讀取環境變數
 from pathlib import Path
+from typing import Optional # 確保 Optional 可以使用
 
 from .utils_dates import parse_date
 from .mailer import render_html_table, send_email
@@ -16,20 +17,21 @@ def load_yaml(path: Path):
     with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-# --- 新增函式：安全地讀取 Email 憑證 ---
+
 def get_email_credentials():
     """Reads email credentials and recipient from GitHub Secrets (Environment Variables)."""
     # 讀取您在 Actions 中設定的環境變數
     username = os.getenv('EMAIL_USERNAME')
     password = os.getenv('EMAIL_PASSWORD')
-    to_list = os.getenv('EMAIL_TO', '').split(',') # 假設 EMAIL_TO 可以有多個收件人，用逗號分隔
+    # 假設 EMAIL_TO 可以有多個收件人，用逗號分隔
+    to_list = os.getenv('EMAIL_TO', '').split(',') 
 
     # 檢查必要的憑證是否齊全
-    if not username or not password or not to_list:
+    if not username or not password or not to_list or not to_list[0].strip():
         print("DEBUG-ACTION: ❌ Email 憑證不完整。請檢查 Secrets 中的 EMAIL_USERNAME, EMAIL_PASSWORD, EMAIL_TO。")
-        return None, None, None
+        return None, None, None, None
 
-    return username, password, to_list
+    return username, password, [addr.strip() for addr in to_list if addr.strip()], username # username is also the from_addr
 
 
 def run_for_date(date_str: str) -> None:
@@ -40,10 +42,9 @@ def run_for_date(date_str: str) -> None:
     brokers_conf = load_yaml(Path(__file__).parents[2] / "config" / "brokers.yaml")
     
     # 從環境變數中獲取憑證
-    email_user, email_pass, email_to = get_email_credentials()
+    email_user, email_pass, email_to, email_from = get_email_credentials()
     if not email_user:
-        # 如果憑證不完整，直接退出執行，避免錯誤
-        return 
+        return # 如果憑證不完整，直接退出
 
     # 處理日期
     tz = settings.get("timezone", "Asia/Taipei")
@@ -77,11 +78,10 @@ def run_for_date(date_str: str) -> None:
         
         # 發送 Email - 傳入憑證
         try:
-             # 注意：這裡假設您的 send_email 函式能接收 username 和 password
-             send_email(subject, html_body, email_to, email_user, email_pass)
+             send_email(subject, html_body, email_to, email_user, email_pass, email_from)
              print("DEBUG-ACTION: 4/4 Email 發送完成。")
         except Exception as e:
-             # 如果寄信失敗，印出完整的錯誤訊息，不再靜默失敗
+             # 如果寄信失敗，印出完整的錯誤訊息
              print(f"DEBUG-ACTION: ❌ Email 寄送失敗！錯誤訊息: {e}")
              
     else:
@@ -91,11 +91,15 @@ def run_for_date(date_str: str) -> None:
         # -------------------------------------------------------------------
 
         # 建議：即使沒有標的，也發送一封簡短通知信，以驗證 Email 設置是否正常
-        # subject = f"隔沖主力監控報告 {trade_date} - (無符合標的)"
-        # html_body = "<p>今日市場上無符合您設定條件的主力鎖漲停標的。</p>"
-        # send_email(subject, html_body, email_to, email_user, email_pass) # 可選
+        subject = f"隔沖主力監控報告 {trade_date} - (無符合標的)"
+        html_body = "<p>今日市場上無符合您設定條件的主力鎖漲停標的，無需操作。</p>"
+        
+        try:
+             send_email(subject, html_body, email_to, email_user, email_pass, email_from)
+             print("DEBUG-ACTION: 4/4 發送『無標的通知』Email 完成。")
+        except Exception as e:
+             print(f"DEBUG-ACTION: ❌ 『無標的通知』Email 寄送失敗！錯誤訊息: {e}")
 
-# ... (main 和 if __name__ == "__main__" 保持不變) ...
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="LimitUp Broker Watch CLI")
