@@ -44,3 +44,11 @@ jobs:
           
           # 步驟 3: 執行您的 Python 腳本
           python -m src.app.main run --date $TODAY_DATE
+          
+      - name: 將生成的資料結果提交回儲存庫 (Commit Data)
+        # 此步驟會將 data_raw/ 和 data_clean/ 中新生成的檔案提交回 GitHub
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          # 只提交數據資料夾內的檔案變動，避免提交其他無關檔案
+          file_pattern: 'data_raw/* data_clean/*'
+          commit_message: "🤖 數據自動提交：更新每日監控結果"
