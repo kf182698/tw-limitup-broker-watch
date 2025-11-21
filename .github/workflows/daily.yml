@@ -1,20 +1,13 @@
 name: Daily Stock Watch (台灣時間 18:00 執行)
 
-# 設定排程
 on:
-  # cron 設定 '0 10 * * 1-5'
-  # UTC 10:00 對應台灣時間 (CST/GMT+8) 18:00。
-  # 執行時間為每週一到週五，以符合交易日需求。
   schedule:
     - cron: '0 10 * * 1-5'
-  
-  # 允許手動觸發 (方便測試)
   workflow_dispatch:
 
 jobs:
   run-daily-analysis:
     runs-on: ubuntu-latest
-    
     steps:
       - name: 檢查程式碼
         uses: actions/checkout@v4
@@ -28,45 +21,37 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: 執行漲停券商監控與 Email 通知
-        # 將您在 Secrets 中設定的密鑰，安全地傳遞為環境變數
         env:
           EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
-          
         run: |
           # 步驟 1: 設定時區為 Asia/Taipei (台灣時間)
           export TZ='Asia/Taipei'
-          
-          # 步驟 2: 獲取今天的日期 (YYYY-MM-DD) 作為程式執行的參數
-          # 這裡會使用當前 Runner 時區下的日期 (CST 18:00)
+          # 步驟 2: 獲取今天的日期 (YYY-MM-DD)
           TODAY_DATE=$(date +%Y-%m-%d)
           echo "台灣時間 $TODAY_DATE 18:00 開始執行"
-          
           # 步驟 3: 執行您的 Python 腳本
           python -m src.app.main run --date $TODAY_DATE
 
-              - name: 驗證數據文件是否生成
-      run: |
-        echo "檢查 data_raw 目錄:"
-        ls -la data_raw/ 2>/dev/null || echo "data_raw 不存在或為空"
-        echo ""
-        echo "檢查 data_clean 目錄:"
-        ls -la data_clean/ 2>/dev/null || echo "data_clean 不存在或為空"
-        echo ""
-        echo "Git 状態："
-        git status
+      - name: 驗證數據文件是否生成
+        run: |
+          echo "檢查 data_raw 目錄:"
+          ls -la data_raw/ 2>/dev/null || echo "data_raw 不存在或為空"
+          echo ""
+          echo "檢查 data_clean 目錄:"
+          ls -la data_clean/ 2>/dev/null || echo "data_clean 不存在或為空"
+          echo ""
+          echo "Git 狀態："
+          git status
 
-            - name: 建立空檔案確保目錄存在
-      run: |
-        mkdir -p data_raw data_clean
+      - name: 建立空檔案確保目錄存在
+        run: mkdir -p data_raw data_clean
+
       - name: 將生成的資料結果提交回儲存庫 (Commit Data)
-        # 此步驟修復了之前因為沒有檔案而失敗的問題
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          # 新增 commit_options: '--allow-empty' 確保在沒有檔案變動時也能成功
-          commit_options: '--allow-empty' 
-          # 只提交數據資料夾內的檔案變動
+          commit_options: '--allow-empty'
           file_pattern: 'data_raw/* data_clean/*'
           commit_message: "🤖 數據自動提交：更新每日監控結果"
-                    skip_dirty_check: true
+          skip_dirty_check: true
