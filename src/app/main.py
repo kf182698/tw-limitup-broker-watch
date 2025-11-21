@@ -35,6 +35,11 @@ def get_email_credentials():
 
 
 def run_for_date(date_str: str) -> None:
+
+        # 確保數據等目錄存在
+    import os
+    os.makedirs('data_raw', exist_ok=True)
+    os.makedirs('data_clean', exist_ok=True)
     """Execute the pipeline for a single trading date."""
     
     # 步驟 1: 載入配置與憑證
@@ -99,6 +104,15 @@ def run_for_date(date_str: str) -> None:
              print("DEBUG-ACTION: 4/4 發送『無標的通知』Email 完成。")
         except Exception as e:
              print(f"DEBUG-ACTION: ❌ 『無標的通知』Email 寄送失敗！錯誤訊息: {e}")
+
+    # 確保目錄存在，即使沒有文件也要创建檔案以便 git-auto-commit-action 課一能找到檔案
+    import os
+    os.makedirs('data_raw', exist_ok=True)
+    os.makedirs('data_clean', exist_ok=True)
+    
+    # 寶存一個檔案時戳記錄，以便記録执行時間
+    with open(f'data_clean/.execution_{trade_date}.log', 'w') as f:
+        f.write(f'Pipeline executed at {__import__("datetime").datetime.now().isoformat()}\n')
 
 
 def main() -> None:
