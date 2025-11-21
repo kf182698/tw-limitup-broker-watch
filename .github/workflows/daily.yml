@@ -1,8 +1,11 @@
 name: Daily Stock Watch (台灣時間 18:00 執行)
 
+permissions:
+  contents: write
+
 on:
   schedule:
-    - cron: '0 10 * * 1-5'   # 台灣時間 18:00 (UTC+8 → UTC 10:00)
+    - cron: '0 10 * * 1-5'
   workflow_dispatch:
 
 jobs:
@@ -17,16 +20,16 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 安裝專案依賴套件
+      - name: 安裝依賴
         run: pip install -r requirements.txt
 
-      - name: 建立數據目錄及必備空檔，防止 workflow 失敗
+      - name: 建立數據目錄與空檔
         run: |
           mkdir -p data_raw data_clean
           touch data_raw/.gitkeep
           touch data_clean/.gitkeep
 
-      - name: 執行漲停券商監控與 Email 通知
+      - name: 執行腳本
         env:
           EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
@@ -34,19 +37,7 @@ jobs:
         run: |
           export TZ='Asia/Taipei'
           TODAY_DATE=$(date +%Y-%m-%d)
-          echo "台灣時間 $TODAY_DATE 18:00 開始執行"
           python -m src.app.main run --date $TODAY_DATE
-
-      - name: 驗證數據文件是否生成
-        run: |
-          echo "檢查 data_raw 目錄:"
-          ls -la data_raw/ 2>/dev/null || echo "data_raw 不存在或為空"
-          echo ""
-          echo "檢查 data_clean 目錄:"
-          ls -la data_clean/ 2>/dev/null || echo "data_clean 不存在或為空"
-          echo ""
-          echo "Git 狀態："
-          git status
 
       - name: 自動 Commit 結果
         uses: stefanzweifel/git-auto-commit-action@v5
@@ -65,3 +56,6 @@ jobs:
           create_branch: false
           create_git_tag_only: false
           internal_git_binary: git
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
