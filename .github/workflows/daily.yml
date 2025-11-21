@@ -1,61 +1,45 @@
-name: Daily Stock Watch (台灣時間 18:00 執行)
-
-permissions:
-  contents: write
+name: Daily Limit-Up Broker Watch
 
 on:
   schedule:
-    - cron: '0 10 * * 1-5'
-  workflow_dispatch:
+    # 每天 18:45 (台灣時間) 執行
+    - cron: "45 10 * * *"   # UTC+0 → 台灣 UTC+8 = 18:45
+  workflow_dispatch: {}
 
 jobs:
-  run-daily-analysis:
+  run:
     runs-on: ubuntu-latest
+
+    env:
+      TZ: Asia/Taipei
+      EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
+      EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+      EMAIL_TO: ${{ secrets.EMAIL_TO }}
+
     steps:
-      - name: 檢查程式碼
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-      - name: 設定 Python 環境
-        uses: actions/setup-python@v5
+      - name: Set timezone
+        run: sudo timedatectl set-timezone Asia/Taipei
+
+      - name: Display current time
+        run: date
+
+      - name: Install Python
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: "3.10"
 
-      - name: 安裝依賴
-        run: pip install -r requirements.txt
-
-      - name: 建立數據目錄與空檔
+      - name: Install dependencies
         run: |
-          mkdir -p data_raw data_clean
-          touch data_raw/.gitkeep
-          touch data_clean/.gitkeep
+          pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: 執行腳本
-        env:
-          EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+      - name: Run Limit-Up Broker Watch script
         run: |
-          export TZ='Asia/Taipei'
-          TODAY_DATE=$(date +%Y-%m-%d)
-          python -m src.app.main run --date $TODAY_DATE
+          echo "==== Running script ===="
+          python src/app/main.py --date today
 
-      - name: 自動 Commit 結果
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_options: --allow-empty
-          file_pattern: data_raw/* data_raw/.gitkeep data_clean/* data_clean/.gitkeep
-          commit_message: "🤖 數據自動提交：更新每日監控結果"
-          skip_dirty_check: true
-          repository: .
-          commit_user_name: github-actions[bot]
-          commit_user_email: 41898282+github-actions[bot]@users.noreply.github.com
-          commit_author: "*** <221647913+***@users.noreply.github.com>"
-          skip_fetch: false
-          skip_checkout: false
-          disable_globbing: false
-          create_branch: false
-          create_git_tag_only: false
-          internal_git_binary: git
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+      - name: Job completed
+        run: echo "==== Workflow finished ===="
