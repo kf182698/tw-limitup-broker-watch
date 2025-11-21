@@ -37,9 +37,10 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run Limit-Up Broker Watch script
+        working-directory: ./src
         run: |
           echo "==== Running script ===="
-          python src/app/main.py --date today
+          python -m app.main --date today
 
       - name: Job completed
         run: echo "==== Workflow finished ===="
