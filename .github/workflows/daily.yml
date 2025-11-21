@@ -45,7 +45,21 @@ jobs:
           
           # 步驟 3: 執行您的 Python 腳本
           python -m src.app.main run --date $TODAY_DATE
-          
+
+              - name: 驗證數據文件是否生成
+      run: |
+        echo "檢查 data_raw 目錄:"
+        ls -la data_raw/ 2>/dev/null || echo "data_raw 不存在或為空"
+        echo ""
+        echo "檢查 data_clean 目錄:"
+        ls -la data_clean/ 2>/dev/null || echo "data_clean 不存在或為空"
+        echo ""
+        echo "Git 状態："
+        git status
+
+            - name: 建立空檔案確保目錄存在
+      run: |
+        mkdir -p data_raw data_clean
       - name: 將生成的資料結果提交回儲存庫 (Commit Data)
         # 此步驟修復了之前因為沒有檔案而失敗的問題
         uses: stefanzweifel/git-auto-commit-action@v5
@@ -55,3 +69,4 @@ jobs:
           # 只提交數據資料夾內的檔案變動
           file_pattern: 'data_raw/* data_clean/*'
           commit_message: "🤖 數據自動提交：更新每日監控結果"
+                    skip_dirty_check: true
