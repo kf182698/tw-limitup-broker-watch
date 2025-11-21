@@ -1,10 +1,18 @@
-"""Command line interface for the LimitUp Broker Watch pipeline."""
+"""
+Main entry point for the Limit-Up Broker Watch project.
+
+功能：
+1. 抓取今日漲停股票
+2. 抓取每檔買超券商資料並篩選主力分點
+3. 產生 email 報表（不論有無命中標的，都會寄信）
+"""
 
 import argparse
 import yaml
-import os # <-- 新增：引入 os 模組來讀取環境變數
 from pathlib import Path
-from typing import Optional # 確保 Optional 可以使用
+import os
+import sys
+from datetime import datetime
 
 from .utils_dates import parse_date
 from .mailer import render_html_table, send_email
@@ -13,116 +21,107 @@ from ..pipeline.build_broker_hits import build_broker_hits
 from ..pipeline.build_email_context import build_email_rows
 
 
-def load_yaml(path: Path):
-    with path.open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+def load_settings():
+    """讀取 config/settings.yaml 與 config/brokers.yaml"""
+    root = Path(__file__).parents[2]
+
+    settings_path = root / "config" / "settings.yaml"
+    brokers_path = root / "config" / "brokers.yaml"
+
+    with open(settings_path, "r", encoding="utf-8") as f:
+        settings = yaml.safe_load(f)
+
+    with open(brokers_path, "r", encoding="utf-8") as f:
+        brokers = yaml.safe_load(f)
+
+    return settings, brokers
 
 
 def get_email_credentials():
-    """Reads email credentials and recipient from GitHub Secrets (Environment Variables)."""
-    # 讀取您在 Actions 中設定的環境變數
-    username = os.getenv('EMAIL_USERNAME')
-    password = os.getenv('EMAIL_PASSWORD')
-    # 假設 EMAIL_TO 可以有多個收件人，用逗號分隔
-    to_list = os.getenv('EMAIL_TO', '').split(',') 
+    """讀取 GitHub Secrets 或本地環境變數"""
+    username = os.getenv("EMAIL_USERNAME")
+    password = os.getenv("EMAIL_PASSWORD")
+    to_env = os.getenv("EMAIL_TO", "").strip()
 
-    # 檢查必要的憑證是否齊全
-    if not username or not password or not to_list or not to_list[0].strip():
-        print("DEBUG-ACTION: ❌ Email 憑證不完整。請檢查 Secrets 中的 EMAIL_USERNAME, EMAIL_PASSWORD, EMAIL_TO。")
-        return None, None, None, None
+    to_list = [addr.strip() for addr in to_env.split(",") if addr.strip()]
 
-    return username, password, [addr.strip() for addr in to_list if addr.strip()], username # username is also the from_addr
+    return username, password, to_list
 
 
-def run_for_date(date_str: str) -> None:
-
-        # 確保數據等目錄存在
-    import os
-    os.makedirs('data_raw', exist_ok=True)
-    os.makedirs('data_clean', exist_ok=True)
-    """Execute the pipeline for a single trading date."""
-    
-    # 步驟 1: 載入配置與憑證
-    settings = load_yaml(Path(__file__).parents[2] / "config" / "settings.yaml")
-    brokers_conf = load_yaml(Path(__file__).parents[2] / "config" / "brokers.yaml")
-    
-    # 從環境變數中獲取憑證
-    email_user, email_pass, email_to, email_from = get_email_credentials()
-    if not email_user:
-        return # 如果憑證不完整，直接退出
-
-    # 處理日期
-    tz = settings.get("timezone", "Asia/Taipei")
-    trade_date = parse_date(date_str, tz)
-    
-    # 建立漲停清單
-    limitup_url = settings.get("source", {}).get("limitup_url")
-    min_pct = settings.get("limitup", {}).get("min_pct_change")
-    print(f"DEBUG-ACTION: 1/4 正在建構漲停清單 ({trade_date})...")
-    limitup_df = build_limitup_list(trade_date, limitup_url, min_pct)
-    
-    # 建立主力分點命中清單
-    broker_template = settings.get("source", {}).get("broker_detail_url_template")
-    print("DEBUG-ACTION: 2/4 正在比對主力分點買賣超資料...")
-    hits_df = build_broker_hits(trade_date, limitup_df, broker_template, brokers_conf)
-    
-    
-    # 步驟 2: 檢查最終結果
-    if hits_df is not None and not hits_df.empty:
-        
-        # -------------------------------------------------------------------
-        # 偵錯檢查點 A：成功找到符合條件個股
-        print(f"DEBUG-ACTION: 🚨 3/4 成功找到符合條件個股 {len(hits_df)} 檔，準備寄信！")
-        # -------------------------------------------------------------------
-
-        # 準備 Email 內容
-        email_rows = build_email_rows(hits_df)
-        subject_prefix = settings.get("email", {}).get("subject_prefix", "隔沖主力鎖漲停標的")
-        subject = f"{subject_prefix} {trade_date}"
-        html_body = render_html_table(email_rows)
-        
-        # 發送 Email - 傳入憑證
-        try:
-             send_email(subject, html_body, email_to, email_user, email_pass, email_from)
-             print("DEBUG-ACTION: 4/4 Email 發送完成。")
-        except Exception as e:
-             # 如果寄信失敗，印出完整的錯誤訊息
-             print(f"DEBUG-ACTION: ❌ Email 寄送失敗！錯誤訊息: {e}")
-             
-    else:
-        # -------------------------------------------------------------------
-        # 偵錯檢查點 B：沒有找到資料
-        print("DEBUG-ACTION: 🟢 3/4 今日沒有符合條件的個股，跳過寫入檔案和 Email 寄送。")
-        # -------------------------------------------------------------------
-
-        # 建議：即使沒有標的，也發送一封簡短通知信，以驗證 Email 設置是否正常
-        subject = f"隔沖主力監控報告 {trade_date} - (無符合標的)"
-        html_body = "<p>今日市場上無符合您設定條件的主力鎖漲停標的，無需操作。</p>"
-        
-        try:
-             send_email(subject, html_body, email_to, email_user, email_pass, email_from)
-             print("DEBUG-ACTION: 4/4 發送『無標的通知』Email 完成。")
-        except Exception as e:
-             print(f"DEBUG-ACTION: ❌ 『無標的通知』Email 寄送失敗！錯誤訊息: {e}")
-
-    # 確保目錄存在，即使沒有文件也要创建檔案以便 git-auto-commit-action 課一能找到檔案
-    import os
-    os.makedirs('data_raw', exist_ok=True)
-    os.makedirs('data_clean', exist_ok=True)
-    
-    # 寶存一個檔案時戳記錄，以便記録执行時間
-    with open(f'data_clean/.execution_{trade_date}.log', 'w') as f:
-        f.write(f'Pipeline executed at {__import__("datetime").datetime.now().isoformat()}\n')
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="LimitUp Broker Watch CLI")
-    sub = parser.add_subparsers(dest="cmd", required=True)
-    run_cmd = sub.add_parser("run", help="Run pipeline for a specific date")
-    run_cmd.add_argument("--date", required=True, help="Date in YYYY-MM-DD format or 'today'")
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--date", type=str, default="today")
     args = parser.parse_args()
-    if args.cmd == "run":
-        run_for_date(args.date)
+
+    # 讀設定
+    settings, brokers_config = load_settings()
+
+    # 解析日期
+    trade_date = parse_date(args.date, settings["timezone"])
+
+    print(f"[INFO] 開始執行：{trade_date}")
+
+    # 1. 取得漲停清單
+    limitup_df = build_limitup_list(
+        trade_date,
+        settings["source"]["limitup_url"],
+        settings["limitup"]["min_pct_change"],
+    )
+
+    total_limitup = len(limitup_df)
+    print(f"[INFO] 今日漲停檔數：{total_limitup}")
+
+    # 2. 主力分點篩選
+    hits_df = build_broker_hits(
+        trade_date,
+        limitup_df,
+        settings["source"]["broker_detail_url_template"],
+        brokers_config,
+    )
+
+    # 3. 準備 email rows
+    rows = build_email_rows(hits_df)
+    total_hits = len(rows)
+
+    print(f"[INFO] 今日命中券商標的數：{total_hits}")
+
+    # 4. 設定信件標題與內容
+    subject_prefix = settings["email"]["subject_prefix"]
+    subject = f"{subject_prefix} {trade_date}"
+
+    if total_hits > 0:
+        # 有標的 → 正常表格
+        html_body = "<p>今日符合條件的標的如下：</p>"
+        html_body += render_html_table(rows)
+    else:
+        # 無標的 → 明確說明
+        html_body = (
+            f"<p>{trade_date} 無任何漲停股的買超第一名券商 "
+            f"符合設定的主力分點清單。</p>"
+            f"<p>漲停檔數：{total_limitup}，命中標的數：{total_hits}</p>"
+        )
+
+    # 5. 讀取 Email 憑證
+    username, password, to_list = get_email_credentials()
+
+    if not username or not password or not to_list:
+        print("[ERROR] Email 憑證未設定完整（EMAIL_USERNAME / EMAIL_PASSWORD / EMAIL_TO）")
+        sys.exit(1)
+
+    # 6. 嘗試寄信並顯示成功/失敗訊息
+    try:
+        ok = send_email(subject, html_body, to_list, username, password)
+        if ok:
+            print(f"[INFO] 郵件成功寄出 → {', '.join(to_list)}")
+        else:
+            print("[ERROR] send_email 回傳 False（寄信可能失敗）")
+            sys.exit(1)
+    except Exception as e:
+        print(f"[ERROR] 寄信過程發生例外：{e}")
+        sys.exit(1)
+
+    print("[INFO] 程式執行完成")
+    return 0
 
 
 if __name__ == "__main__":
