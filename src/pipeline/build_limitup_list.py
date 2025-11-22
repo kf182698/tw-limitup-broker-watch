@@ -3,8 +3,8 @@
 from typing import Optional
 import pandas as pd
 
-from ..source_site.limitup_list import fetch_limitup_html, parse_limitup_table
-from ..app.utils_io import write_csv
+from source_site.limitup_list import fetch_limitup_html, parse_limitup_table
+from app.utils_io import write_csv
 
 
 def build_limitup_list(trade_date: str, limitup_url: str, min_pct_change: Optional[float]) -> pd.DataFrame:
