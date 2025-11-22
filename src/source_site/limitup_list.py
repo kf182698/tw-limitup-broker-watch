@@ -4,7 +4,7 @@ from typing import Optional, Any
 import pandas as pd
 from io import StringIO
 from datetime import date
-# from ..app.utils_http import get_session # 保持註解，因為我們直接使用 requests
+# from app.utils_http import get_session # 保持註解，因為我們直接使用 requests
 import requests # 確保 requests 模組可用
 
 
