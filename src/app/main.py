@@ -12,17 +12,17 @@ import yaml
 from pathlib import Path
 import os
 import sys
-from datetime import datetime
 
-from .utils_dates import parse_date
-from .mailer import render_html_table, send_email
-from ..pipeline.build_limitup_list import build_limitup_list
-from ..pipeline.build_broker_hits import build_broker_hits
-from ..pipeline.build_email_context import build_email_rows
+from app.utils_dates import parse_date
+from app.mailer import render_html_table, send_email
+from pipeline.build_limitup_list import build_limitup_list
+from pipeline.build_broker_hits import build_broker_hits
+from pipeline.build_email_context import build_email_rows
 
 
 def load_settings():
     """讀取 config/settings.yaml 與 config/brokers.yaml"""
+    # 此時工作目錄已是 src，父層就是 repo root
     root = Path(__file__).parents[2]
 
     settings_path = root / "config" / "settings.yaml"
@@ -90,11 +90,9 @@ def main():
     subject = f"{subject_prefix} {trade_date}"
 
     if total_hits > 0:
-        # 有標的 → 正常表格
         html_body = "<p>今日符合條件的標的如下：</p>"
         html_body += render_html_table(rows)
     else:
-        # 無標的 → 明確說明
         html_body = (
             f"<p>{trade_date} 無任何漲停股的買超第一名券商 "
             f"符合設定的主力分點清單。</p>"
