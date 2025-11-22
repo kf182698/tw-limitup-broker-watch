@@ -1,7 +1,7 @@
 """Fetch and parse broker detail tables for individual stocks."""
 
 import pandas as pd
-from ..app.utils_http import get_session
+from app.utils_http import get_session
 
 
 def build_broker_url(template: str, code: str) -> str:
