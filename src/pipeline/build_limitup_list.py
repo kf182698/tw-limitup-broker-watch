@@ -1,35 +1,39 @@
-"""Build the daily limit‑up list and save it to disk."""
+"""
+Pipeline step for building the daily limit‑up list.
 
+This module uses the ``fetch_limitup_lists`` function from ``source_site.limitup_list``
+to retrieve both TWSE and TPEX limit‑up stocks for a given date. It then writes
+the combined result to ``data_clean/limitup_YYYY-MM-DD.csv`` and returns the
+DataFrame for downstream processing.
+"""
+
+from pathlib import Path
 from typing import Optional
+
 import pandas as pd
 
-from source_site.limitup_list import fetch_limitup_html, parse_limitup_table
-from app.utils_io import write_csv
+from ..source_site.limitup_list import fetch_limitup_lists
+from ..app.utils_io import write_csv
 
 
-def build_limitup_list(trade_date: str, limitup_url: str, min_pct_change: Optional[float]) -> pd.DataFrame:
-    """Fetch, parse and filter the daily limit‑up list.
-
-    Args:
-        trade_date: Date string (YYYY‑MM‑DD) for which to build the list.
-        limitup_url: Fully qualified URL of the limit‑up ranking page.
-        min_pct_change: Minimum percent change threshold for filtering. If
-            None, no filtering is applied.
-
-    Returns:
-        A DataFrame containing the filtered list of limit‑up stocks.
+def build_limitup_list(
+    trade_date: str,
+    twse_url: str,
+    tpex_url: str,
+    min_pct_change: float
+) -> pd.DataFrame:
     """
-    if not limitup_url:
-        raise ValueError("limitup_url must be provided in settings")
-    html = fetch_limitup_html(limitup_url)
-    raw_df = parse_limitup_table(html, trade_date)
-    if min_pct_change is not None and "pct_change" in raw_df.columns:
-        try:
-            threshold = float(min_pct_change)
-            filtered = raw_df[raw_df["pct_change"] >= threshold].copy()
-        except Exception:
-            filtered = raw_df.copy()
-    else:
-        filtered = raw_df.copy()
-    write_csv(filtered, f"data_clean/limitup_{trade_date}.csv")
-    return filtered
+    Build the combined limit‑up list for TWSE and TPEX for the given date.
+
+    :param trade_date: ISO date string (YYYY-MM-DD)
+    :param twse_url: URL for TWSE limit‑up ranking page
+    :param tpex_url: URL for TPEX limit‑up ranking page
+    :param min_pct_change: Threshold for limit‑up (e.g. 9.8)
+    :return: DataFrame of limit‑up stocks from both markets
+    """
+    df = fetch_limitup_lists(trade_date, twse_url, tpex_url, min_pct_change)
+    # Write to data_clean folder
+    Path("data_clean").mkdir(parents=True, exist_ok=True)
+    out_path = f"data_clean/limitup_{trade_date}.csv"
+    write_csv(df, out_path)
+    return df

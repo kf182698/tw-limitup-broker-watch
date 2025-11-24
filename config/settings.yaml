@@ -1,24 +1,21 @@
-# 全域設定
 timezone: "Asia/Taipei"
 
-# 資料來源設定
 source:
-  # 漲停清單頁面網址，例如 https://example.com/limitup
-  limitup_url: "https://fubon-ebrokerdj.fbs.com.tw/z/zg/zg_AB_0_0.djhtm"
-  # 券商分點明細網址模板，例如 https://example.com/broker/{code}
-  broker_detail_url_template: "https://fubon-ebrokerdj.fbs.com.tw/z/zc/zco/zco_8422.djhtm"
+  # URL to fetch the TWSE (listed market) daily price change ranking.
+  # This page lists stocks with their daily percent change. The script will
+  # identify limit‑up stocks by filtering rows where pct_change >= `min_pct_change`.
+  twse_limitup_url: "https://fubon-ebrokerdj.fbs.com.tw/z/zg/zg_A_0_0.djhtm"
+  # URL to fetch the TPEX (OTC market) daily price change ranking.
+  tpex_limitup_url: "https://fubon-ebrokerdj.fbs.com.tw/z/zg/zg_A_1_1.djhtm"
+  # Template URL to fetch broker detail pages for each stock. The `{code}`
+  # placeholder will be replaced with the numeric stock code.
+  broker_detail_url_template: "https://fubon-ebrokerdj.fbs.com.tw/z/zc/zco/zco_{code}.djhtm"
 
-# 漲停篩選設定
 limitup:
-  # 最低漲幅百分比（大於等於此值才視為漲停），若資料頁面本身已經是漲停清單可設為 0
+  # Minimum daily percent change to be considered as limit‑up. Use 9.8 for
+  # TWSE/TPEX; adjust if needed (e.g. 10.0).
   min_pct_change: 9.8
 
-# 通知設定
 email:
-  # 收件人列表
-  to:
-    - "kf182698@gmail.com"
-  # 通知標題前綴，會自動加上日期
+  # Prefix for email subject; the script will append the trade date.
   subject_prefix: "隔沖主力鎖漲停標的"
-  # 寄信服務優先順序，可依需求調整
-  provider_priority: ["sendgrid", "gmail"]

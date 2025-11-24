@@ -1,17 +1,24 @@
 """
-Main entry point for the Limit-Up Broker Watch project.
+Main entry point for the Limit-Up Broker Watch project (multi-market version).
 
-功能：
-1. 抓取今日漲停股票
-2. 抓取每檔買超券商資料並篩選主力分點
-3. 產生 email 報表（不論有無命中標的，都會寄信）
+This script orchestrates the daily pipeline:
+
+1. Fetch the limit‑up lists for both TWSE (上市) and TPEX (上櫃) using the URLs
+   specified in config/settings.yaml.
+2. Save the combined list to ``data_clean/limitup_YYYY-MM-DD.csv``.
+3. Fetch the detailed broker buy/sell reports for each limit‑up stock and
+   evaluate whether the top buy broker matches a target list defined in
+   ``config/brokers.yaml``.
+4. Save the hits to ``data_clean/broker_hits_YYYY-MM-DD.csv``.
+5. Compose and send an email summarising the results. A notification is sent
+   even when no hits are found.
 """
 
 import argparse
-import yaml
-from pathlib import Path
 import os
 import sys
+from pathlib import Path
+import yaml
 
 from app.utils_dates import parse_date
 from app.mailer import render_html_table, send_email
@@ -21,105 +28,81 @@ from pipeline.build_email_context import build_email_rows
 
 
 def load_settings():
-    """讀取 config/settings.yaml 與 config/brokers.yaml"""
-    # 此時工作目錄已是 src，父層就是 repo root
+    """Load project settings and broker configuration from YAML files."""
     root = Path(__file__).parents[2]
-
     settings_path = root / "config" / "settings.yaml"
     brokers_path = root / "config" / "brokers.yaml"
-
     with open(settings_path, "r", encoding="utf-8") as f:
         settings = yaml.safe_load(f)
-
     with open(brokers_path, "r", encoding="utf-8") as f:
         brokers = yaml.safe_load(f)
-
     return settings, brokers
 
 
 def get_email_credentials():
-    """讀取 GitHub Secrets 或本地環境變數"""
+    """Retrieve email credentials from environment variables (GitHub Secrets)."""
     username = os.getenv("EMAIL_USERNAME")
     password = os.getenv("EMAIL_PASSWORD")
     to_env = os.getenv("EMAIL_TO", "").strip()
-
     to_list = [addr.strip() for addr in to_env.split(",") if addr.strip()]
-
     return username, password, to_list
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--date", type=str, default="today")
+    parser.add_argument("--date", type=str, default="today", help="Date to run the pipeline for (YYYY-MM-DD or 'today')")
     args = parser.parse_args()
 
-    # 讀設定
     settings, brokers_config = load_settings()
-
-    # 解析日期
     trade_date = parse_date(args.date, settings["timezone"])
+    print(f"[INFO] Processing date: {trade_date}")
 
-    print(f"[INFO] 開始執行：{trade_date}")
+    # Fetch limit‑up lists for TWSE and TPEX
+    twse_url = settings["source"]["twse_limitup_url"]
+    tpex_url = settings["source"]["tpex_limitup_url"]
+    min_pct = float(settings["limitup"]["min_pct_change"])
+    limitup_df = build_limitup_list(trade_date, twse_url, tpex_url, min_pct)
+    print(f"[INFO] Total limit‑up stocks (TWSE + TPEX): {len(limitup_df)}")
 
-    # 1. 取得漲停清單
-    limitup_df = build_limitup_list(
-        trade_date,
-        settings["source"]["limitup_url"],
-        settings["limitup"]["min_pct_change"],
-    )
-
-    total_limitup = len(limitup_df)
-    print(f"[INFO] 今日漲停檔數：{total_limitup}")
-
-    # 2. 主力分點篩選
+    # Build broker hits
     hits_df = build_broker_hits(
         trade_date,
         limitup_df,
         settings["source"]["broker_detail_url_template"],
         brokers_config,
     )
-
-    # 3. 準備 email rows
     rows = build_email_rows(hits_df)
     total_hits = len(rows)
+    print(f"[INFO] Stocks meeting broker criteria: {total_hits}")
 
-    print(f"[INFO] 今日命中券商標的數：{total_hits}")
-
-    # 4. 設定信件標題與內容
+    # Compose email content
     subject_prefix = settings["email"]["subject_prefix"]
     subject = f"{subject_prefix} {trade_date}"
-
     if total_hits > 0:
-        html_body = "<p>今日符合條件的標的如下：</p>"
-        html_body += render_html_table(rows)
+        html_body = "<p>今日符合條件的標的如下：</p>" + render_html_table(rows)
     else:
         html_body = (
-            f"<p>{trade_date} 無任何漲停股的買超第一名券商 "
-            f"符合設定的主力分點清單。</p>"
-            f"<p>漲停檔數：{total_limitup}，命中標的數：{total_hits}</p>"
+            f"<p>{trade_date} 無任何漲停股的買超第一名券商符合設定的主力分點清單。</p>"
+            f"<p>漲停檔數：{len(limitup_df)}，命中標的數：{total_hits}</p>"
         )
 
-    # 5. 讀取 Email 憑證
+    # Send email
     username, password, to_list = get_email_credentials()
-
     if not username or not password or not to_list:
-        print("[ERROR] Email 憑證未設定完整（EMAIL_USERNAME / EMAIL_PASSWORD / EMAIL_TO）")
+        print("[ERROR] Email credentials missing (EMAIL_USERNAME/EMAIL_PASSWORD/EMAIL_TO)")
         sys.exit(1)
-
-    # 6. 嘗試寄信並顯示成功/失敗訊息
     try:
         ok = send_email(subject, html_body, to_list, username, password)
         if ok:
-            print(f"[INFO] 郵件成功寄出 → {', '.join(to_list)}")
+            print(f"[INFO] Email sent to: {', '.join(to_list)}")
         else:
-            print("[ERROR] send_email 回傳 False（寄信可能失敗）")
+            print("[ERROR] send_email returned False (email might not have been sent)")
             sys.exit(1)
     except Exception as e:
-        print(f"[ERROR] 寄信過程發生例外：{e}")
+        print(f"[ERROR] Exception while sending email: {e}")
         sys.exit(1)
 
-    print("[INFO] 程式執行完成")
-    return 0
+    print("[INFO] Pipeline completed successfully")
 
 
 if __name__ == "__main__":
