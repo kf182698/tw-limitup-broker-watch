@@ -89,7 +89,7 @@ def parse_limitup_table(html: str, trade_date: str) -> pd.DataFrame:
     result["trade_date"] = trade_date 
     
     result["code"] = df.get("code", pd.Series(dtype=str)).astype(str).str.strip()
-    result["stock_name"] = df.get("stock_name", pd.Series(dtype=str)).astype(str).str.strip()
+result["code"] = df.get("stock_name", pd.Series(dtype=str)).astype(str).str.extract(r'^(\d+)', expand=False)
     result["market"] = None # 保持為 None，等待後續判斷 (如 TPEX, TAI)
     result["close"] = df.get("close")
     result["volume"] = df.get("volume")
