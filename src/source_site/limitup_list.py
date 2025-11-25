@@ -1,174 +1,169 @@
-"""
-Module to fetch and parse daily limit‑up lists for both TWSE (上市) and TPEX (上櫃).
+from __future__ import annotations
 
-This module defines two helper functions to retrieve raw HTML from the Fubon eBroker
-ranking pages and parse them into DataFrames of limit‑up stocks.
-
-The TWSE (listed) limit‑up list is fetched from the URL specified in
-``settings.source.twse_limitup_url`` (usually something like
-``https://fubon-ebrokerdj.fbs.com.tw/z/zg/zg_A_0_0.djhtm``). The TPEX (OTC) limit‑up
-list is fetched from ``settings.source.tpex_limitup_url`` (for example
-``https://fubon-ebrokerdj.fbs.com.tw/z/zg/zg_A_1_1.djhtm``). Both pages contain
-ranking tables of price changes; we extract rows where the daily percent change
-meets or exceeds the configured ``min_pct_change`` threshold (typically 9.8 or
-10.0) to identify stocks that closed at their limit price.
-
-The returned DataFrames have the following columns:
-
-    [trade_date, code, stock_name, market, close, volume, pct_change]
-
-Where ``market`` is either "TWSE" or "TPEX".
-
-Note: Fubon's pages are encoded in Big5. This module sets the response
-encoding explicitly and falls back to ``apparent_encoding``.
-"""
+from datetime import date
+from io import StringIO
+from typing import List, Tuple
 
 import pandas as pd
-import requests
 from bs4 import BeautifulSoup
-from typing import List
+
+from app.utils_http import get_session
 
 
-def _get_html(url: str) -> str:
-    """Fetch HTML content from the given URL using requests with Big5 decoding."""
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/117.0 Safari/537.36"
-        )
-    }
-    resp = requests.get(url, headers=headers, timeout=30)
-    # Attempt to decode using Big5; fallback to apparent_encoding
-    try:
-        resp.encoding = "big5"
-        html = resp.text
-    except Exception:
-        resp.encoding = resp.apparent_encoding or "utf-8"
-        html = resp.text
-    return html
+def _fetch_html(url: str) -> str:
+    """使用共用 session 取得 HTML 文字內容。"""
+    session = get_session()
+    resp = session.get(url, timeout=10)
+    resp.raise_for_status()
+    resp.encoding = resp.encoding or "utf-8"
+    return resp.text
 
 
-def _parse_limitup_table(html: str, trade_date: str, market: str, min_pct_change: float) -> pd.DataFrame:
+def _extract_tables(html: str) -> List[pd.DataFrame]:
     """
-    Parse an HTML document containing a price‑change ranking table.
+    從 HTML 中提取所有可能的表格。
 
-    Returns a DataFrame of rows where the daily percent change (pct_change)
-    meets or exceeds ``min_pct_change``.
-
-    :param html: Raw HTML content from Fubon ranking page
-    :param trade_date: ISO date string (YYYY-MM-DD)
-    :param market: "TWSE" or "TPEX" to tag the output
-    :param min_pct_change: Minimum daily change (%) to consider as limit‑up
-    :return: DataFrame with columns [trade_date, code, stock_name, market, close, volume, pct_change]
+    不直接對整個 HTML 調用 read_html，而是逐個 table 處理，
+    避免把頁面上的說明文字或奇怪結構一起吃掉。
     """
     soup = BeautifulSoup(html, "lxml")
-    # Find the first table with the ranking data
-    tables = pd.read_html(str(soup))
+    tables: List[pd.DataFrame] = []
+
+    for tbl in soup.find_all("table"):
+        try:
+            dfs = pd.read_html(StringIO(str(tbl)))
+        except ValueError:
+            continue
+        for df in dfs:
+            if not df.empty:
+                tables.append(df)
+
+    return tables
+
+
+def _pick_stock_table(tables: List[pd.DataFrame]) -> pd.DataFrame:
+    """
+    從多個表格中挑出「包含股票代號與名稱」的那一個。
+
+    判斷條件：
+    - 欄名中要同時包含「名稱」與「代號 / 股票」其中之一。
+    """
+    for t in tables:
+        cols_str = "".join(str(c) for c in t.columns)
+        if "名稱" in cols_str and ("代號" in cols_str or "股票" in cols_str):
+            df = t.copy()
+            df.columns = [str(c).strip() for c in df.columns]
+            return df
+
+    raise ValueError("找不到同時包含名稱與代號的股票表格")
+
+
+def _find_column(df: pd.DataFrame, keywords: List[str]) -> str:
+    """
+    在欄名中尋找第一個包含任一關鍵字的欄位名稱。
+    找不到時丟出錯誤，避免使用硬編 index 導致爆炸。
+    """
+    for col in df.columns:
+        for kw in keywords:
+            if kw in str(col):
+                return col
+    raise ValueError(f"找不到欄位，關鍵字: {keywords}，現有欄名: {list(df.columns)}")
+
+
+def _parse_limitup_table(html: str, market: str, trade_date: date, min_pct_change: float) -> pd.DataFrame:
+    """
+    從單一市場的漲幅排行頁面 HTML 中，解析出「已達漲停門檻」的股票清單。
+
+    會回傳至少包含：
+    - symbol: 股票代碼
+    - name: 股票名稱
+    - pct_change: 漲跌幅（數值，不含 %）
+    - market: 市場別 (TWSE / TPEX)
+    - date: 交易日期 (YYYY-MM-DD)
+    以及原始表格的其他欄位。
+    """
+    tables = _extract_tables(html)
     if not tables:
-        return pd.DataFrame(columns=["trade_date", "code", "stock_name", "market", "close", "volume", "pct_change"])
-    df = tables[0]
-    # The ranking table should have at least these columns
-    # Columns may be unnamed or shifted depending on the page; standardise them
-    # Expected column order: [Rank, Code, Name, Price, Change, Pct_change, Volume]
-    # Some pages merge Code and Name into one column; handle that case too.
-    cols = [c for c in df.columns]
-    # Attempt to identify code and name columns
-    # If the first column contains codes mixed with names, split them
-    if any(df.iloc[:, 0].astype(str).str.isnumeric()):
-        # Assume first column is code, second is name
-        code_col = df.columns[0]
-        name_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
-    else:
-        # Try splitting the second column
-        code_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
-        name_col = df.columns[2] if len(df.columns) > 2 else df.columns[1]
-    # Identify numeric columns for price, pct_change, volume
-    # Try to find a column with % sign or containing '漲跌幅'
-    pct_col_candidates = [c for c in df.columns if '幅' in str(c) or '%' in str(c)]
-    pct_col = pct_col_candidates[0] if pct_col_candidates else df.columns[5]
-    price_col_candidates = [c for c in df.columns if '收盤' in str(c) or '價格' in str(c)]
-    price_col = price_col_candidates[0] if price_col_candidates else df.columns[3]
-    vol_col_candidates = [c for c in df.columns if '成交量' in str(c) or '量' in str(c)]
-    vol_col = vol_col_candidates[0] if vol_col_candidates else df.columns[-1]
-    # Build new DataFrame
-    out_rows = []
-    for _, row in df.iterrows():
-        code = str(row[code_col]).strip()
-        name = str(row[name_col]).strip()
-        # Remove any non‑numeric prefix in code
-        if not code.isdigit():
-            # Some pages have code like '4939亞電' concatenated; split digits
-            digits = ''.join(ch for ch in code if ch.isdigit())
-            if digits:
-                code = digits
-            else:
-                continue
+        raise ValueError(f"[{market}] 找不到任何表格，可能來源頁面變更或被擋")
+
+    df = _pick_stock_table(tables)
+
+    # 嘗試找代號 / 名稱 / 漲幅三種欄位
+    symbol_col = _find_column(df, ["代號", "股票代號", "證券代號", "股票"])
+    name_col = _find_column(df, ["名稱", "證券名稱"])
+    pct_col = _find_column(df, ["漲幅", "漲跌幅", "幅度"])
+
+    # 處理漲幅欄位：移除 %，轉成 float
+    pct_series = (
+        df[pct_col]
+        .astype(str)
+        .str.replace("%", "", regex=False)
+        .str.replace(",", "", regex=False)
+        .str.strip()
+    )
+    df[pct_col] = pd.to_numeric(pct_series, errors="coerce")
+
+    # 篩選達到漲停門檻的列
+    df = df[df[pct_col] >= min_pct_change].copy()
+
+    # 建立標準欄位
+    df["symbol"] = df[symbol_col].astype(str).str.strip()
+    df["name"] = df[name_col].astype(str).str.strip()
+    df["pct_change"] = df[pct_col]
+    df["market"] = market
+    df["date"] = trade_date.isoformat()
+
+    # 避免有奇怪的 NaN 或空代碼
+    df = df[df["symbol"] != ""]
+    df = df.dropna(subset=["symbol"])
+
+    return df.reset_index(drop=True)
+
+
+def fetch_twse_limitup_list(trade_date: date, url: str, min_pct_change: float) -> pd.DataFrame:
+    """
+    抓取「上市」漲停股清單。
+    """
+    html = _fetch_html(url)
+    return _parse_limitup_table(html, market="TWSE", trade_date=trade_date, min_pct_change=min_pct_change)
+
+
+def fetch_tpex_limitup_list(trade_date: date, url: str, min_pct_change: float) -> pd.DataFrame:
+    """
+    抓取「上櫃」漲停股清單。
+    """
+    html = _fetch_html(url)
+    return _parse_limitup_table(html, market="TPEX", trade_date=trade_date, min_pct_change=min_pct_change)
+
+
+def fetch_limitup_lists(
+    trade_date: date,
+    twse_url: str,
+    tpex_url: str,
+    min_pct_change: float,
+) -> pd.DataFrame:
+    """
+    同時抓取「上市 + 上櫃」的漲停股清單並合併。
+    """
+    frames: List[pd.DataFrame] = []
+
+    if twse_url:
         try:
-            pct_str = str(row[pct_col]).strip()
-            # Remove plus/minus signs and percent symbol
-            pct_val = float(pct_str.replace('%', '').replace('+', '').replace(',', '').strip())
-        except Exception:
-            continue
-        if pct_val < min_pct_change:
-            continue
-        # Parse price
+            twse_df = fetch_twse_limitup_list(trade_date, twse_url, min_pct_change)
+            frames.append(twse_df)
+        except Exception as e:
+            # 保留 log 訊息給呼叫端決定如何處理
+            print(f"[WARN] TWSE 漲停清單抓取失敗：{e}")
+
+    if tpex_url:
         try:
-            price = float(str(row[price_col]).replace(',', '').strip())
-        except Exception:
-            price = None
-        # Parse volume
-        try:
-            volume = int(str(row[vol_col]).replace(',', '').strip())
-        except Exception:
-            volume = None
-        out_rows.append({
-            "trade_date": trade_date,
-            "code": code,
-            "stock_name": name,
-            "market": market,
-            "close": price,
-            "volume": volume,
-            "pct_change": pct_val,
-        })
-    return pd.DataFrame(out_rows)
+            tpex_df = fetch_tpex_limitup_list(trade_date, tpex_url, min_pct_change)
+            frames.append(tpex_df)
+        except Exception as e:
+            print(f"[WARN] TPEX 漲停清單抓取失敗：{e}")
 
+    if not frames:
+        # 讓上層知道真的完全抓不到任何資料
+        raise ValueError("上市與上櫃漲停清單皆無法取得")
 
-def fetch_twse_limitup_list(date_str: str, url: str, min_pct_change: float) -> pd.DataFrame:
-    """
-    Fetch and parse the TWSE (上市) limit‑up list for a given date.
-
-    :param date_str: ISO date string (YYYY-MM-DD)
-    :param url: Fubon URL configured for TWSE daily price change ranking
-    :param min_pct_change: Minimum percent change to consider as limit‑up
-    :return: DataFrame of TWSE limit‑up stocks
-    """
-    html = _get_html(url)
-    return _parse_limitup_table(html, date_str, market="TWSE", min_pct_change=min_pct_change)
-
-
-def fetch_tpex_limitup_list(date_str: str, url: str, min_pct_change: float) -> pd.DataFrame:
-    """
-    Fetch and parse the TPEX (上櫃) limit‑up list for a given date.
-
-    :param date_str: ISO date string (YYYY-MM-DD)
-    :param url: Fubon URL configured for TPEX daily price change ranking
-    :param min_pct_change: Minimum percent change to consider as limit‑up
-    :return: DataFrame of TPEX limit‑up stocks
-    """
-    html = _get_html(url)
-    return _parse_limitup_table(html, date_str, market="TPEX", min_pct_change=min_pct_change)
-
-
-def fetch_limitup_lists(date_str: str, twse_url: str, tpex_url: str, min_pct_change: float) -> pd.DataFrame:
-    """
-    Fetch both TWSE and TPEX limit‑up lists and return a combined DataFrame.
-
-    :param date_str: ISO date string (YYYY-MM-DD)
-    :param twse_url: Fubon URL for TWSE limit‑up ranking page
-    :param tpex_url: Fubon URL for TPEX limit‑up ranking page
-    :param min_pct_change: Threshold for percent change (e.g. 9.8)
-    :return: Combined DataFrame of limit‑up stocks
-    """
-    twse_df = fetch_twse_limitup_list(date_str, twse_url, min_pct_change)
-    tpex_df = fetch_tpex_limitup_list(date_str, tpex_url, min_pct_change)
-    return pd.concat([twse_df, tpex_df], ignore_index=True)
+    return pd.concat(frames, ignore_index=True)
