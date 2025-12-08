@@ -2,151 +2,172 @@ from __future__ import annotations
 
 from datetime import date
 from io import StringIO
-from typing import List, Tuple
+from typing import List
 
 import pandas as pd
-from bs4 import BeautifulSoup
 
 from app.utils_http import get_session
 
 
-def _fetch_html(url: str) -> str:
-    """使用共用 session 取得 HTML 文字內容。"""
+# 官方開放資料 URL（固定使用，不再吃 settings 裡的 Fubon 連結）
+TWSE_STOCK_DAY_ALL_URL = "https://www.twse.com.tw/exchangeReport/STOCK_DAY_ALL?response=open_data"
+TPEX_DAILY_CLOSE_URL = (
+    "https://www.tpex.org.tw/web/stock/aftertrading/DAILY_CLOSE_quotes/"
+    "stk_quote_result.php?l=zh-tw&o=data"
+)
+
+
+def _fetch_csv(url: str) -> pd.DataFrame:
+    """
+    用共用 session 下載 CSV 並讀成 DataFrame。
+    """
     session = get_session()
-    resp = session.get(url, timeout=10)
+    resp = session.get(url, timeout=15)
     resp.raise_for_status()
-    resp.encoding = resp.encoding or "utf-8"
-    return resp.text
+
+    # 有些 CSV 會帶 BOM，用 utf-8-sig 比較保險
+    text = resp.content.decode("utf-8-sig")
+    df = pd.read_csv(StringIO(text))
+    # 把欄名做 strip，避免前後有空白
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
 
 
-def _extract_tables(html: str) -> List[pd.DataFrame]:
+def _to_float(series: pd.Series) -> pd.Series:
     """
-    從 HTML 中提取所有可能的表格。
-
-    不直接對整個 HTML 調用 read_html，而是逐個 table 處理，
-    避免把頁面上的說明文字或奇怪結構一起吃掉。
+    將包含逗號、空白或其他符號的數值欄位轉成 float。
     """
-    soup = BeautifulSoup(html, "lxml")
-    tables: List[pd.DataFrame] = []
-
-    for tbl in soup.find_all("table"):
-        try:
-            dfs = pd.read_html(StringIO(str(tbl)))
-        except ValueError:
-            continue
-
-        for df in dfs:
-            if not df.empty:
-                tables.append(df)
-
-    return tables
-
-
-def _pick_stock_table(tables: List[pd.DataFrame]) -> pd.DataFrame:
-    """
-    從多個表格中挑出「包含股票代號與名稱」的那一個。
-
-    判斷優先順序：
-    1. 欄名中同時包含「名稱」以及「代號 / 股票」其一
-    2. 若找不到，退而求其次：只要有「代號 / 股票」欄就先當成股票表格
-    """
-    # 優先：名稱 + 代號 / 股票
-    for t in tables:
-        cols_str = "".join(str(c) for c in t.columns)
-        has_name = "名稱" in cols_str or "證券名稱" in cols_str
-        has_code = (
-            "代號" in cols_str
-            or "股票代號" in cols_str
-            or "證券代號" in cols_str
-            or "股票" in cols_str
-        )
-        if has_name and has_code:
-            df = t.copy()
-            df.columns = [str(c).strip() for c in df.columns]
-            return df
-
-    # 次優先：只有代號 / 股票欄
-    for t in tables:
-        cols_str = "".join(str(c) for c in t.columns)
-        has_code_only = (
-            "代號" in cols_str
-            or "股票代號" in cols_str
-            or "證券代號" in cols_str
-            or "股票" in cols_str
-        )
-        if has_code_only:
-            df = t.copy()
-            df.columns = [str(c).strip() for c in df.columns]
-            return df
-
-    raise ValueError("找不到包含股票代號的表格，請檢查來源頁面是否改版")
-
-
-def _find_column(df: pd.DataFrame, keywords: List[str]) -> str:
-    """
-    在欄名中尋找第一個包含任一關鍵字的欄位名稱。
-
-    找不到時丟出錯誤，避免使用硬編 index 導致爆炸。
-    """
-    for col in df.columns:
-        for kw in keywords:
-            if kw in str(col):
-                return col
-
-    raise ValueError(
-        f"找不到欄位，關鍵字: {keywords}，現有欄名: {list(df.columns)}"
-    )
-
-
-def _parse_limitup_table(
-    html: str,
-    market: str,
-    trade_date: date,
-    min_pct_change: float,
-) -> pd.DataFrame:
-    """
-    從單一市場的漲幅排行頁面 HTML 中，解析出「已達漲停門檻」的股票清單。
-
-    會回傳至少包含：
-    - symbol: 股票代碼
-    - name: 股票名稱
-    - pct_change: 漲跌幅（數值，不含 %）
-    - market: 市場別 (TWSE / TPEX)
-    - date: 交易日期 (YYYY-MM-DD)
-
-    以及原始表格的其他欄位。
-    """
-    tables = _extract_tables(html)
-    if not tables:
-        raise ValueError(f"[{market}] 找不到任何表格，可能來源頁面變更或被擋")
-
-    df = _pick_stock_table(tables)
-
-    # 嘗試找代號 / 名稱 / 漲幅三種欄位
-    symbol_col = _find_column(
-        df,
-        ["代號", "股票代號", "證券代號", "股票"],
-    )
-    name_col = _find_column(
-        df,
-        ["名稱", "證券名稱"],
-    )
-    pct_col = _find_column(
-        df,
-        ["漲幅", "漲跌幅", "幅度"],
-    )
-
-    # 處理漲幅欄位：移除 %，轉成 float
-    pct_series = (
-        df[pct_col]
-        .astype(str)
-        .str.replace("%", "", regex=False)
+    cleaned = (
+        series.astype(str)
         .str.replace(",", "", regex=False)
+        .str.replace("＋", "+", regex=False)
+        .str.replace("－", "-", regex=False)
+        .str.replace(" ", "", regex=False)
         .str.strip()
     )
-    df[pct_col] = pd.to_numeric(pct_series, errors="coerce")
+    return pd.to_numeric(cleaned, errors="coerce")
 
-    # 篩選達到漲停門檻的列
+
+def _parse_twse_limitup(trade_date: date, min_pct_change: float) -> pd.DataFrame:
+    """
+    從 TWSE 開放資料（STOCK_DAY_ALL）抓「上市」當日漲停股。
+    """
+    df = _fetch_csv(TWSE_STOCK_DAY_ALL_URL)
+
+    # 依欄名關鍵字找出需要的欄位
+    def find_col(keywords: List[str]) -> str:
+        for col in df.columns:
+            for kw in keywords:
+                if kw in str(col):
+                    return col
+        raise ValueError(f"TWSE CSV 找不到欄位，關鍵字: {keywords}，現有欄名: {list(df.columns)}")
+
+    date_col = find_col(["日期"])
+    symbol_col = find_col(["證券代號", "代號"])
+    name_col = find_col(["證券名稱", "名稱"])
+    close_col = find_col(["收盤價", "收盤"])
+    change_col = find_col(["漲跌價差", "漲跌"])
+    volume_col = find_col(["成交股數"])
+    turnover_col = find_col(["成交金額"])
+
+    # 轉數值
+    close = _to_float(df[close_col])
+    change = _to_float(df[change_col])
+
+    # 前一日收盤 = 收盤價 - 漲跌價差
+    prev_close = close - change
+    # 漲跌幅 % = 漲跌價差 / 前一日收盤
+    pct_change = (change / prev_close) * 100.0
+    df["pct_change"] = pct_change
+
+    # 基本欄位整理
+    df["symbol"] = df[symbol_col].astype(str).str.strip()
+    df["name"] = df[name_col].astype(str).str.strip()
+    df["close"] = close
+    df["change"] = change
+    df["volume"] = _to_float(df[volume_col])
+    df["turnover"] = _to_float(df[turnover_col])
+    df["market"] = "TWSE"
+    df["date"] = trade_date.isoformat()
+
+    # 移除無效 symbol（例如「合計」等）
+    df = df[df["symbol"].str.fullmatch(r"\d+")]
+    df = df.dropna(subset=["close", "pct_change"])
+
+    # 只保留達到漲停門檻的
+    df = df[df["pct_change"] >= min_pct_change].copy()
+
+    return df.reset_index(drop=True)
+
+
+def _parse_tpex_limitup(trade_date: date, min_pct_change: float) -> pd.DataFrame:
+    """
+    從 TPEX 開放資料（DAILY_CLOSE_quotes）抓「上櫃」當日漲停股。
+    """
+    df = _fetch_csv(TPEX_DAILY_CLOSE_URL)
+
+    # 依欄名關鍵字找出需要的欄位
+    def find_col(keywords: List[str]) -> str:
+        for col in df.columns:
+            for kw in keywords:
+                if kw in str(col):
+                    return col
+        raise ValueError(f"TPEX CSV 找不到欄位，關鍵字: {keywords}，現有欄名: {list(df.columns)}")
+
+    # 參考資料集欄位說明：
+    # 資料日期;代號;名稱;收盤;漲跌;開盤;最高;最低;均價;成交股數;成交金額;成交筆數;... 
+    symbol_col = find_col(["代號"])
+    name_col = find_col(["名稱"])
+    close_col = find_col(["收盤"])
+    change_col = find_col(["漲跌"])
+    volume_col = find_col(["成交股數"])
+    turnover_col = find_col(["成交金額"])
+
+    close = _to_float(df[close_col])
+    change = _to_float(df[change_col])
+
+    # 前一日收盤 = 收盤價 - 漲跌
+    prev_close = close - change
+    pct_change = (change / prev_close) * 100.0
+    df["pct_change"] = pct_change
+
+    df["symbol"] = df[symbol_col].astype(str).str.strip()
+    df["name"] = df[name_col].astype(str).str.strip()
+    df["close"] = close
+    df["change"] = change
+    df["volume"] = _to_float(df[volume_col])
+    df["turnover"] = _to_float(df[turnover_col])
+    df["market"] = "TPEX"
+    df["date"] = trade_date.isoformat()
+
+    # 只保留正常股票代碼
+    df = df[df["symbol"].str.fullmatch(r"\d+")]
+    df = df.dropna(subset=["close", "pct_change"])
+
+    df = df[df["pct_change"] >= min_pct_change].copy()
+
+    return df.reset_index(drop=True)
+
+
+def fetch_twse_limitup_list(trade_date: date, url: str, min_pct_change: float) -> pd.DataFrame:
+    """
+    抓取「上市」漲停股清單。
+
+    注意：為了穩定性，**不再使用傳入的 url 參數**，統一改用官方 open data。
+    url 參數只保留介面相容性，實際會被忽略。
+    """
+    return _parse_twse_limitup(trade_date, min_pct_change)
+
+
+def fetch_tpex_limitup_list(trade_date: date, url: str, min_pct_change: float) -> pd.DataFrame:
+    """
+    抓取「上櫃」漲停股清單。
+
+    同樣忽略傳入的 url，直接用官方 open data。
+    """
+    return _parse_tpex_limitup(trade_date, min_pct_change)
+
+
 def fetch_limitup_lists(
     trade_date: date,
     twse_url: str,
@@ -154,55 +175,25 @@ def fetch_limitup_lists(
     min_pct_change: float,
 ) -> pd.DataFrame:
     """
-    取得指定日期的「上市 + 上櫃」漲停股清單。
+    同時抓取「上市 + 上櫃」漲停股清單並合併。
 
-    參數：
-        trade_date: 交易日期
-        twse_url:   上市漲幅排行網址
-        tpex_url:   上櫃漲幅排行網址
-        min_pct_change: 視為「漲停」的最低漲跌幅門檻（例如 9.5）
-    回傳：
-        合併後的 DataFrame，至少包含：
-        - symbol
-        - name
-        - pct_change
-        - market (TWSE / TPEX)
-        - date (YYYY-MM-DD)
+    這裡的 twse_url / tpex_url 僅為保留舊介面，不再實際使用。
     """
-    # TWSE
-    twse_html = _fetch_html(twse_url)
-    twse_df = _parse_limitup_table(
-        html=twse_html,
-        market="TWSE",
-        trade_date=trade_date,
-        min_pct_change=min_pct_change,
-    )
+    frames: List[pd.DataFrame] = []
 
-    # TPEX
-    tpex_html = _fetch_html(tpex_url)
-    tpex_df = _parse_limitup_table(
-        html=tpex_html,
-        market="TPEX",
-        trade_date=trade_date,
-        min_pct_change=min_pct_change,
-    )
+    try:
+        twse_df = fetch_twse_limitup_list(trade_date, twse_url, min_pct_change)
+        frames.append(twse_df)
+    except Exception as e:
+        print(f"[WARN] TWSE 漲停清單抓取失敗：{e}")
 
-    # 合併兩個市場
-    combined = pd.concat([twse_df, tpex_df], ignore_index=True)
+    try:
+        tpex_df = fetch_tpex_limitup_list(trade_date, tpex_url, min_pct_change)
+        frames.append(tpex_df)
+    except Exception as e:
+        print(f"[WARN] TPEX 漲停清單抓取失敗：{e}")
 
-    # 標準化欄位命名（若 _parse_limitup_table 已處理，就不會多做事）
-    combined = combined.copy()
-    if "市場" in combined.columns and "market" not in combined.columns:
-        combined = combined.rename(columns={"市場": "market"})
-    if "日期" in combined.columns and "date" not in combined.columns:
-        combined = combined.rename(columns={"日期": "date"})
+    if not frames:
+        raise ValueError("上市與上櫃漲停清單皆無法取得（官方 open data 來源均失敗）")
 
-    # 確保 date 欄位存在且為字串格式 YYYY-MM-DD
-    if "date" not in combined.columns:
-        combined["date"] = trade_date.isoformat()
-    else:
-        combined["date"] = pd.to_datetime(combined["date"], errors="coerce").dt.date
-        combined["date"] = combined["date"].fillna(trade_date).astype(str)
-
-    return combined
-
+    return pd.concat(frames, ignore_index=True)
