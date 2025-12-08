@@ -147,3 +147,62 @@ def _parse_limitup_table(
     df[pct_col] = pd.to_numeric(pct_series, errors="coerce")
 
     # 篩選達到漲停門檻的列
+def fetch_limitup_lists(
+    trade_date: date,
+    twse_url: str,
+    tpex_url: str,
+    min_pct_change: float,
+) -> pd.DataFrame:
+    """
+    取得指定日期的「上市 + 上櫃」漲停股清單。
+
+    參數：
+        trade_date: 交易日期
+        twse_url:   上市漲幅排行網址
+        tpex_url:   上櫃漲幅排行網址
+        min_pct_change: 視為「漲停」的最低漲跌幅門檻（例如 9.5）
+    回傳：
+        合併後的 DataFrame，至少包含：
+        - symbol
+        - name
+        - pct_change
+        - market (TWSE / TPEX)
+        - date (YYYY-MM-DD)
+    """
+    # TWSE
+    twse_html = _fetch_html(twse_url)
+    twse_df = _parse_limitup_table(
+        html=twse_html,
+        market="TWSE",
+        trade_date=trade_date,
+        min_pct_change=min_pct_change,
+    )
+
+    # TPEX
+    tpex_html = _fetch_html(tpex_url)
+    tpex_df = _parse_limitup_table(
+        html=tpex_html,
+        market="TPEX",
+        trade_date=trade_date,
+        min_pct_change=min_pct_change,
+    )
+
+    # 合併兩個市場
+    combined = pd.concat([twse_df, tpex_df], ignore_index=True)
+
+    # 標準化欄位命名（若 _parse_limitup_table 已處理，就不會多做事）
+    combined = combined.copy()
+    if "市場" in combined.columns and "market" not in combined.columns:
+        combined = combined.rename(columns={"市場": "market"})
+    if "日期" in combined.columns and "date" not in combined.columns:
+        combined = combined.rename(columns={"日期": "date"})
+
+    # 確保 date 欄位存在且為字串格式 YYYY-MM-DD
+    if "date" not in combined.columns:
+        combined["date"] = trade_date.isoformat()
+    else:
+        combined["date"] = pd.to_datetime(combined["date"], errors="coerce").dt.date
+        combined["date"] = combined["date"].fillna(trade_date).astype(str)
+
+    return combined
+
