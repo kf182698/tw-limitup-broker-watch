@@ -8,17 +8,26 @@ Pipeline step for building the daily limit-up list.
 """
 
 from pathlib import Path
-from datetime import date
+from datetime import date as DateType
+from typing import Union
+
 import pandas as pd
 
-# ⚠ 一律使用「絕對匯入」，避免 python -m app.main 時出現
-# ImportError: attempted relative import beyond top-level package
 from source_site.limitup_list import fetch_limitup_lists
 from app.utils_io import write_csv
 
 
+def _get_date_str(trade_date: Union[DateType, str]) -> str:
+    """
+    trade_date 可能是 datetime.date 或 str，這裡統一轉成 YYYY-MM-DD 字串。
+    """
+    if isinstance(trade_date, DateType):
+        return trade_date.isoformat()
+    return str(trade_date)
+
+
 def build_limitup_list(
-    trade_date: date,
+    trade_date: Union[DateType, str],
     twse_url: str,
     tpex_url: str,
     min_pct: float,
@@ -28,29 +37,32 @@ def build_limitup_list(
 
     Parameters
     ----------
-    trade_date : datetime.date
-        交易日期
+    trade_date : datetime.date or str
+        交易日期，可以是 date 或 'YYYY-MM-DD' 字串
     twse_url : str
-        富邦（或其他來源）的「上市股價漲幅排行」網址
+        （目前為相容接口，實際已由 source_site.limitup_list 內部改用官方 open data）
     tpex_url : str
-        富邦（或其他來源）的「上櫃股價漲幅排行」網址
+        同上
     min_pct : float
         判定漲停的最小漲幅門檻（例如 9.8）
 
     Returns
     -------
     df : pandas.DataFrame
-        合併後的漲停股清單（至少包含：代號、名稱、收盤價、成交量、漲跌幅、market 等欄位）
+        合併後的漲停股清單
     """
     # 1. 取得「上市 + 上櫃」漲停股列表
     df = fetch_limitup_lists(trade_date, twse_url, tpex_url, min_pct)
 
-    # 2. 寫出到 data_clean/limitup_YYYY-MM-DD.csv
+    # 2. 決定輸出路徑
     root = Path(__file__).resolve().parents[2]  # repo root
     out_dir = root / "data_clean"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    out_path = out_dir / f"limitup_{trade_date.isoformat()}.csv"
+    date_str = _get_date_str(trade_date)
+    out_path = out_dir / f"limitup_{date_str}.csv"
+
+    # 3. 寫出 CSV
     write_csv(df, str(out_path))
 
     return df
