@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date as DateType
 from io import StringIO
 from typing import List
 
@@ -10,7 +10,12 @@ from app.utils_http import get_session
 
 
 # 官方開放資料 URL（固定使用，不再吃 settings 裡的 Fubon 連結）
-TWSE_STOCK_DAY_ALL_URL = "https://www.twse.com.tw/exchangeReport/STOCK_DAY_ALL?response=open_data"
+# 上市：個股日成交資訊（全部股票，盤後日成交）
+TWSE_STOCK_DAY_ALL_URL = (
+    "https://www.twse.com.tw/exchangeReport/STOCK_DAY_ALL?response=open_data"
+)
+
+# 上櫃：每日收盤行情（全部股票）
 TPEX_DAILY_CLOSE_URL = (
     "https://www.tpex.org.tw/web/stock/aftertrading/DAILY_CLOSE_quotes/"
     "stk_quote_result.php?l=zh-tw&o=data"
@@ -26,7 +31,7 @@ def _fetch_csv(url: str) -> pd.DataFrame:
     resp.raise_for_status()
 
     # 有些 CSV 會帶 BOM，用 utf-8-sig 比較保險
-    text = resp.content.decode("utf-8-sig")
+    text = resp.content.decode("utf-8-sig", errors="ignore")
     df = pd.read_csv(StringIO(text))
     # 把欄名做 strip，避免前後有空白
     df.columns = [str(c).strip() for c in df.columns]
@@ -48,7 +53,16 @@ def _to_float(series: pd.Series) -> pd.Series:
     return pd.to_numeric(cleaned, errors="coerce")
 
 
-def _parse_twse_limitup(trade_date: date, min_pct_change: float) -> pd.DataFrame:
+def _get_date_str(trade_date) -> str:
+    """
+    trade_date 可能是 datetime.date 或 str，統一轉成字串。
+    """
+    if isinstance(trade_date, DateType):
+        return trade_date.isoformat()
+    return str(trade_date)
+
+
+def _parse_twse_limitup(trade_date, min_pct_change: float) -> pd.DataFrame:
     """
     從 TWSE 開放資料（STOCK_DAY_ALL）抓「上市」當日漲停股。
     """
@@ -60,7 +74,9 @@ def _parse_twse_limitup(trade_date: date, min_pct_change: float) -> pd.DataFrame
             for kw in keywords:
                 if kw in str(col):
                     return col
-        raise ValueError(f"TWSE CSV 找不到欄位，關鍵字: {keywords}，現有欄名: {list(df.columns)}")
+        raise ValueError(
+            f"TWSE CSV 找不到欄位，關鍵字: {keywords}，現有欄名: {list(df.columns)}"
+        )
 
     date_col = find_col(["日期"])
     symbol_col = find_col(["證券代號", "代號"])
@@ -74,8 +90,10 @@ def _parse_twse_limitup(trade_date: date, min_pct_change: float) -> pd.DataFrame
     close = _to_float(df[close_col])
     change = _to_float(df[change_col])
 
-    # 前一日收盤 = 收盤價 - 漲跌價差
+    # 避免除以零
     prev_close = close - change
+    prev_close = prev_close.replace(0, pd.NA)
+
     # 漲跌幅 % = 漲跌價差 / 前一日收盤
     pct_change = (change / prev_close) * 100.0
     df["pct_change"] = pct_change
@@ -88,9 +106,9 @@ def _parse_twse_limitup(trade_date: date, min_pct_change: float) -> pd.DataFrame
     df["volume"] = _to_float(df[volume_col])
     df["turnover"] = _to_float(df[turnover_col])
     df["market"] = "TWSE"
-    df["date"] = trade_date.isoformat()
+    df["date"] = _get_date_str(trade_date)
 
-    # 移除無效 symbol（例如「合計」等）
+    # 移除無效 symbol（例如「合計」或文字）
     df = df[df["symbol"].str.fullmatch(r"\d+")]
     df = df.dropna(subset=["close", "pct_change"])
 
@@ -100,7 +118,7 @@ def _parse_twse_limitup(trade_date: date, min_pct_change: float) -> pd.DataFrame
     return df.reset_index(drop=True)
 
 
-def _parse_tpex_limitup(trade_date: date, min_pct_change: float) -> pd.DataFrame:
+def _parse_tpex_limitup(trade_date, min_pct_change: float) -> pd.DataFrame:
     """
     從 TPEX 開放資料（DAILY_CLOSE_quotes）抓「上櫃」當日漲停股。
     """
@@ -112,10 +130,12 @@ def _parse_tpex_limitup(trade_date: date, min_pct_change: float) -> pd.DataFrame
             for kw in keywords:
                 if kw in str(col):
                     return col
-        raise ValueError(f"TPEX CSV 找不到欄位，關鍵字: {keywords}，現有欄名: {list(df.columns)}")
+        raise ValueError(
+            f"TPEX CSV 找不到欄位，關鍵字: {keywords}，現有欄名: {list(df.columns)}"
+        )
 
     # 參考資料集欄位說明：
-    # 資料日期;代號;名稱;收盤;漲跌;開盤;最高;最低;均價;成交股數;成交金額;成交筆數;... 
+    # 資料日期;代號;名稱;收盤;漲跌;開盤;最高;最低;均價;成交股數;成交金額;成交筆數;...
     symbol_col = find_col(["代號"])
     name_col = find_col(["名稱"])
     close_col = find_col(["收盤"])
@@ -126,8 +146,8 @@ def _parse_tpex_limitup(trade_date: date, min_pct_change: float) -> pd.DataFrame
     close = _to_float(df[close_col])
     change = _to_float(df[change_col])
 
-    # 前一日收盤 = 收盤價 - 漲跌
     prev_close = close - change
+    prev_close = prev_close.replace(0, pd.NA)
     pct_change = (change / prev_close) * 100.0
     df["pct_change"] = pct_change
 
@@ -138,7 +158,7 @@ def _parse_tpex_limitup(trade_date: date, min_pct_change: float) -> pd.DataFrame
     df["volume"] = _to_float(df[volume_col])
     df["turnover"] = _to_float(df[turnover_col])
     df["market"] = "TPEX"
-    df["date"] = trade_date.isoformat()
+    df["date"] = _get_date_str(trade_date)
 
     # 只保留正常股票代碼
     df = df[df["symbol"].str.fullmatch(r"\d+")]
@@ -149,7 +169,7 @@ def _parse_tpex_limitup(trade_date: date, min_pct_change: float) -> pd.DataFrame
     return df.reset_index(drop=True)
 
 
-def fetch_twse_limitup_list(trade_date: date, url: str, min_pct_change: float) -> pd.DataFrame:
+def fetch_twse_limitup_list(trade_date, url: str, min_pct_change: float) -> pd.DataFrame:
     """
     抓取「上市」漲停股清單。
 
@@ -159,7 +179,7 @@ def fetch_twse_limitup_list(trade_date: date, url: str, min_pct_change: float) -
     return _parse_twse_limitup(trade_date, min_pct_change)
 
 
-def fetch_tpex_limitup_list(trade_date: date, url: str, min_pct_change: float) -> pd.DataFrame:
+def fetch_tpex_limitup_list(trade_date, url: str, min_pct_change: float) -> pd.DataFrame:
     """
     抓取「上櫃」漲停股清單。
 
@@ -169,7 +189,7 @@ def fetch_tpex_limitup_list(trade_date: date, url: str, min_pct_change: float) -
 
 
 def fetch_limitup_lists(
-    trade_date: date,
+    trade_date,
     twse_url: str,
     tpex_url: str,
     min_pct_change: float,
